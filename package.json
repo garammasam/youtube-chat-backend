@@ -1,0 +1,23 @@
+{
+  "name": "youtube-chat-server",
+  "version": "1.0.0",
+  "description": "Backend server for YouTube video chat application",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "cheerio": "1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.24.1",
+    "youtube-transcript": "^1.0.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+} 
