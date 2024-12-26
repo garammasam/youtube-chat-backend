@@ -631,6 +631,11 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Add a test route
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'Backend is working!' });
+});
+
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
