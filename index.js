@@ -7,6 +7,21 @@ import fetch from 'node-fetch';
 
 dotenv.config();
 
+// Log environment information
+console.log('Server starting with:', {
+  nodeVersion: process.version,
+  platform: process.platform,
+  arch: process.arch,
+  env: process.env.NODE_ENV || 'development'
+});
+
+// Verify YouTube Transcript package
+try {
+  console.log('YouTube Transcript package version:', require('youtube-transcript/package.json').version);
+} catch (e) {
+  console.warn('Could not determine YouTube Transcript package version');
+}
+
 const app = express();
 
 app.use(cors({
@@ -514,20 +529,30 @@ async function fetchVideoTranscript(videoId) {
 
 app.post('/api/transcript', async (req, res) => {
   try {
+    console.log('Received transcript request:', {
+      url: req.body.url,
+      headers: req.headers,
+      timestamp: new Date().toISOString()
+    });
+    
     const { url } = req.body;
     
     if (!url) {
+      console.log('URL missing in request');
       return res.status(400).json({ error: 'URL is required' });
     }
 
     const videoId = extractVideoId(url);
+    console.log('Extracted video ID:', videoId);
     
     if (!videoId) {
+      console.log('Invalid video ID extracted from URL:', url);
       return res.status(400).json({ error: 'Invalid YouTube URL' });
     }
 
     // Return cached data if available
     if (transcriptCache.has(videoId)) {
+      console.log('Returning cached data for video:', videoId);
       const cachedData = transcriptCache.get(videoId);
       const analysis = videoAnalysisCache.get(videoId);
       return res.json({
@@ -542,20 +567,32 @@ app.post('/api/transcript', async (req, res) => {
     }
 
     try {
+      console.log('Fetching transcript for video:', videoId);
       const { transcript: transcriptResult, language, captionType } = await fetchVideoTranscript(videoId);
+      console.log('Transcript fetch successful:', {
+        language,
+        captionType,
+        transcriptLength: transcriptResult?.length || 0
+      });
 
       // Process transcript and get total duration
       const { chunks, totalDuration } = chunkTranscript(transcriptResult);
+      console.log('Processed transcript:', {
+        chunks: chunks.length,
+        totalDuration
+      });
 
       // Try to fetch video title using oEmbed
       let videoTitle = 'YouTube Video';
       try {
+        console.log('Fetching video metadata...');
         const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
         const oembedResponse = await fetch(oembedUrl);
         const oembedData = await oembedResponse.json();
         videoTitle = oembedData.title || videoTitle;
+        console.log('Video metadata fetched:', { title: videoTitle });
       } catch (e) {
-        console.log('Failed to fetch video title:', e);
+        console.error('Failed to fetch video title:', e);
       }
 
       const metadata = {
@@ -565,7 +602,9 @@ app.post('/api/transcript', async (req, res) => {
       };
 
       // Analyze the transcript with detected language
+      console.log('Starting transcript analysis...');
       const analysis = await analyzeTranscript(transcriptResult, metadata, language);
+      console.log('Transcript analysis complete');
 
       // Store processed data
       const processedData = {
@@ -578,7 +617,9 @@ app.post('/api/transcript', async (req, res) => {
 
       transcriptCache.set(videoId, processedData);
       videoAnalysisCache.set(videoId, analysis);
+      console.log('Data cached for video:', videoId);
 
+      console.log('Sending successful response');
       return res.json({
         success: true,
         message: `Transcript loaded successfully (${captionType === 'auto' ? 'Auto-generated' : 'Manual'} captions)`,
@@ -589,14 +630,22 @@ app.post('/api/transcript', async (req, res) => {
         captionType
       });
     } catch (transcriptError) {
-      console.error('Transcript error:', transcriptError);
+      console.error('Transcript fetch error details:', {
+        error: transcriptError,
+        message: transcriptError.message,
+        stack: transcriptError.stack
+      });
       throw new Error(
         'Failed to load video captions. ' +
         'Please ensure the video has either manual or auto-generated captions available.'
       );
     }
   } catch (error) {
-    console.error('API error:', error);
+    console.error('API error details:', {
+      error: error,
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
