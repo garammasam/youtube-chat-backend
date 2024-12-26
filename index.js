@@ -2,10 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { getSubtitles } from 'youtube-caption-extractor';
+import { google } from 'googleapis';
 import fetch from 'node-fetch';
 
 dotenv.config();
+
+// Initialize YouTube API
+const youtube = google.youtube('v3');
+const API_KEY = process.env.YOUTUBE_API_KEY;
 
 // Log environment information
 console.log('Server starting with:', {
@@ -397,64 +401,60 @@ async function fetchVideoTranscript(videoId) {
   try {
     console.log('Attempting to fetch transcript for video:', videoId);
 
-    // Array of languages to try
-    const languages = ['en', 'ms', 'id', 'auto'];
-    let transcript = null;
-    let language = 'en';
-    let captionType = 'auto';
-    let lastError = null;
-
-    for (const lang of languages) {
-      try {
-        console.log('Attempting fetch with language:', lang);
-        const result = await getSubtitles({
-          videoID: videoId,
-          lang: lang
-        });
-
-        if (result && Array.isArray(result) && result.length > 0) {
-          transcript = result.map(item => ({
-            text: item.text,
-            offset: Math.floor(item.start * 1000),
-            duration: Math.floor((item.end - item.start) * 1000)
-          }));
-          language = lang;
-          captionType = 'auto';
-          console.log('Successfully fetched transcript with language:', lang);
-          break;
-        }
-      } catch (error) {
-        console.log('Attempt failed with language:', lang, 'Error:', error.message);
-        lastError = error;
-        continue;
-      }
-    }
-
-    if (!transcript) {
-      throw lastError || new Error('No captions found for this video.');
-    }
-
-    // Process the transcript
-    const processedTranscript = transcript
-      .map(item => ({
-        ...item,
-        text: item.text
-          .replace(/(\r\n|\n|\r)/gm, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-      }))
-      .filter(item => item.text.length > 0);
-
-    console.log('Successfully processed transcript:', {
-      type: captionType,
-      language,
-      segments: processedTranscript.length
+    // First, get video details to check if captions are available
+    const videoResponse = await youtube.videos.list({
+      key: API_KEY,
+      part: ['contentDetails', 'snippet'],
+      id: [videoId]
     });
 
+    if (!videoResponse.data.items || videoResponse.data.items.length === 0) {
+      throw new Error('Video not found');
+    }
+
+    const video = videoResponse.data.items[0];
+    console.log('Video details:', {
+      title: video.snippet.title,
+      hasCaptions: video.contentDetails.caption === 'true'
+    });
+
+    // Get available captions
+    const captionResponse = await youtube.captions.list({
+      key: API_KEY,
+      part: ['snippet'],
+      videoId: videoId
+    });
+
+    console.log('Available captions:', captionResponse.data);
+
+    if (!captionResponse.data.items || captionResponse.data.items.length === 0) {
+      throw new Error('No captions available for this video');
+    }
+
+    // Try to find English or auto-generated captions
+    const captions = captionResponse.data.items;
+    let captionTrack = captions.find(c => c.snippet.language === 'en' && !c.snippet.trackKind.includes('ASR')) ||
+                       captions.find(c => c.snippet.language === 'en') ||
+                       captions[0];
+
+    if (!captionTrack) {
+      throw new Error('No suitable captions found');
+    }
+
+    // Get the actual caption content
+    const captionContent = await youtube.captions.download({
+      key: API_KEY,
+      id: captionTrack.id,
+      tfmt: 'srt'
+    });
+
+    // Parse the SRT format into our transcript format
+    const transcript = parseSRT(captionContent.data);
+    
     return {
-      transcript: processedTranscript,
-      language,
-      captionType
+      transcript,
+      language: captionTrack.snippet.language,
+      captionType: captionTrack.snippet.trackKind.includes('ASR') ? 'auto' : 'manual'
     };
   } catch (error) {
     console.error('Final transcript fetch error:', error);
@@ -463,6 +463,35 @@ async function fetchVideoTranscript(videoId) {
       'Please try another video or ensure the video has accessible captions.'
     );
   }
+}
+
+function parseSRT(srtContent) {
+  const segments = srtContent.split('\n\n');
+  return segments
+    .map(segment => {
+      const lines = segment.split('\n');
+      if (lines.length < 3) return null;
+      
+      const timeMatch = lines[1].match(/(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})/);
+      if (!timeMatch) return null;
+
+      const startTime = timeToMilliseconds(timeMatch[1]);
+      const endTime = timeToMilliseconds(timeMatch[2]);
+      const text = lines.slice(2).join(' ').trim();
+
+      return {
+        text,
+        offset: startTime,
+        duration: endTime - startTime
+      };
+    })
+    .filter(Boolean);
+}
+
+function timeToMilliseconds(timeStr) {
+  const [time, ms] = timeStr.split(',');
+  const [hours, minutes, seconds] = time.split(':').map(Number);
+  return (hours * 3600 + minutes * 60 + seconds) * 1000 + Number(ms);
 }
 
 app.post('/api/transcript', async (req, res) => {
