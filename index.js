@@ -17,10 +17,13 @@ app.use(cors({
     'http://127.0.0.1:5174', 
     'http://192.168.1.100:5173', 
     'http://192.168.1.100:5174',
-    process.env.FRONTEND_URL || 'https://youtube-chat-beryl.vercel.app'
+    'https://youtube-chat-beryl.vercel.app',
+    'https://youtube-chat-git-main-baqhtear.vercel.app',
+    'https://youtube-chat-baqhtear.vercel.app'
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
+  credentials: true
 }));
 
 app.use(express.json());
