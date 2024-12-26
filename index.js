@@ -419,126 +419,72 @@ async function fetchVideoTranscript(videoId) {
       hasCaptions: video.contentDetails.caption === 'true'
     });
 
-    // Try to fetch captions using the v3 API
-    const languages = ['en', 'en-US', 'en-GB', 'ms', 'id'];
-    let transcriptText = null;
-    let language = 'en';
-    let captionType = 'auto';
+    // Try to fetch captions using Innertube API
+    const innertubeBody = {
+      context: {
+        client: {
+          clientName: 'WEB',
+          clientVersion: '2.20231219.01.00'
+        }
+      },
+      params: videoId
+    };
 
-    // Try to get caption tracks
-    const captionResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${API_KEY}`
+    console.log('Fetching with Innertube API...');
+    const innertubeResponse = await fetch(
+      'https://www.youtube.com/youtubei/v1/get_transcript?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        body: JSON.stringify(innertubeBody)
+      }
     );
+
+    if (!innertubeResponse.ok) {
+      console.log('Innertube API request failed:', await innertubeResponse.text());
+      throw new Error('Failed to fetch captions from Innertube API');
+    }
+
+    const innertubeData = await innertubeResponse.json();
+    console.log('Innertube API response:', innertubeData);
+
+    if (!innertubeData.actions || !innertubeData.actions[0] || !innertubeData.actions[0].updateEngagementPanelAction) {
+      throw new Error('No caption data in Innertube response');
+    }
+
+    const transcriptData = innertubeData.actions[0].updateEngagementPanelAction.content.transcriptRenderer.body.transcriptBodyRenderer.cueGroups;
     
-    if (!captionResponse.ok) {
-      console.log('Failed to get caption tracks, trying direct method');
-    } else {
-      const captionData = await captionResponse.json();
-      console.log('Caption tracks:', captionData);
+    if (!transcriptData || transcriptData.length === 0) {
+      throw new Error('No transcript segments found');
     }
 
-    // Try direct caption fetching with different formats
-    for (const lang of languages) {
-      try {
-        console.log(`Attempting to fetch captions for language: ${lang}`);
-        // Try format 1
-        let response = await fetch(
-          `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}`
-        );
-        
-        if (!response.ok) {
-          // Try format 2
-          response = await fetch(
-            `https://www.youtube.com/api/timedtext?type=track&v=${videoId}&lang=${lang}`
-          );
-        }
-        
-        if (!response.ok) {
-          // Try format 3 with track kind
-          response = await fetch(
-            `https://www.youtube.com/api/timedtext?type=list&v=${videoId}&tlangs=1`
-          );
-        }
-        
-        if (response.ok) {
-          const text = await response.text();
-          if (text && text.includes('<text')) {
-            transcriptText = text;
-            language = lang;
-            break;
-          }
-        }
-      } catch (error) {
-        console.log(`Failed to fetch captions for ${lang}:`, error.message);
-        continue;
-      }
+    // Convert Innertube format to our transcript format
+    const transcript = transcriptData.map(group => {
+      const cue = group.transcriptCueGroupRenderer.cues[0].transcriptCueRenderer;
+      return {
+        text: cue.cue.simpleText,
+        offset: parseFloat(cue.startOffsetMs),
+        duration: parseFloat(cue.durationMs)
+      };
+    }).filter(item => item.text && item.text.length > 0);
+
+    if (transcript.length === 0) {
+      throw new Error('No valid transcript segments found');
     }
 
-    // If no manual captions, try auto-generated with different formats
-    if (!transcriptText) {
-      try {
-        console.log('Attempting to fetch auto-generated captions');
-        // Try format 1
-        let response = await fetch(
-          `https://www.youtube.com/api/timedtext?v=${videoId}&asr=1&lang=en`
-        );
-        
-        if (!response.ok) {
-          // Try format 2
-          response = await fetch(
-            `https://www.youtube.com/api/timedtext?v=${videoId}&kind=asr&lang=en`
-          );
-        }
-        
-        if (!response.ok) {
-          // Try format 3
-          response = await fetch(
-            `https://www.youtube.com/api/timedtext?v=${videoId}&tlang=en&kind=asr`
-          );
-        }
-        
-        if (response.ok) {
-          const text = await response.text();
-          if (text && text.includes('<text')) {
-            transcriptText = text;
-            captionType = 'auto';
-          }
-        }
-      } catch (error) {
-        console.log('Failed to fetch auto-generated captions:', error.message);
-      }
-    }
+    console.log('Successfully parsed transcript:', {
+      segments: transcript.length,
+      firstSegment: transcript[0],
+      lastSegment: transcript[transcript.length - 1]
+    });
 
-    // Try one last time with raw page scraping
-    if (!transcriptText) {
-      try {
-        console.log('Attempting to fetch captions through page scraping');
-        const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-        const html = await response.text();
-        
-        // Extract caption data from page source
-        const captionMatch = html.match(/"captions":\s*({[^}]+})/);
-        if (captionMatch) {
-          console.log('Found caption data in page source');
-          const captionData = JSON.parse(captionMatch[1]);
-          console.log('Caption data:', captionData);
-        }
-      } catch (error) {
-        console.log('Failed to scrape captions:', error.message);
-      }
-    }
-
-    if (!transcriptText) {
-      throw new Error('No captions found for this video');
-    }
-
-    // Parse the XML caption format
-    const transcript = parseYouTubeCaption(transcriptText);
-    
     return {
       transcript,
-      language,
-      captionType
+      language: 'en', // Default to English since Innertube API usually returns the best available language
+      captionType: 'auto'
     };
   } catch (error) {
     console.error('Final transcript fetch error:', error);
