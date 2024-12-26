@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { google } from 'googleapis';
 import fetch from 'node-fetch';
+import { DOMParser } from 'xmldom';
 
 dotenv.config();
 
@@ -401,7 +402,7 @@ async function fetchVideoTranscript(videoId) {
   try {
     console.log('Attempting to fetch transcript for video:', videoId);
 
-    // First, get video details to check if captions are available
+    // First, get video details
     const videoResponse = await youtube.videos.list({
       key: API_KEY,
       part: ['contentDetails', 'snippet'],
@@ -418,43 +419,64 @@ async function fetchVideoTranscript(videoId) {
       hasCaptions: video.contentDetails.caption === 'true'
     });
 
-    // Get available captions
-    const captionResponse = await youtube.captions.list({
-      key: API_KEY,
-      part: ['snippet'],
-      videoId: videoId
-    });
+    // Try to fetch captions using a direct approach
+    const languages = ['en', 'en-US', 'en-GB', 'ms', 'id'];
+    let transcriptText = null;
+    let language = 'en';
+    let captionType = 'auto';
 
-    console.log('Available captions:', captionResponse.data);
-
-    if (!captionResponse.data.items || captionResponse.data.items.length === 0) {
-      throw new Error('No captions available for this video');
+    for (const lang of languages) {
+      try {
+        console.log(`Attempting to fetch captions for language: ${lang}`);
+        const response = await fetch(
+          `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}`
+        );
+        
+        if (response.ok) {
+          const text = await response.text();
+          if (text && text.includes('<text')) {
+            transcriptText = text;
+            language = lang;
+            break;
+          }
+        }
+      } catch (error) {
+        console.log(`Failed to fetch captions for ${lang}:`, error.message);
+        continue;
+      }
     }
 
-    // Try to find English or auto-generated captions
-    const captions = captionResponse.data.items;
-    let captionTrack = captions.find(c => c.snippet.language === 'en' && !c.snippet.trackKind.includes('ASR')) ||
-                       captions.find(c => c.snippet.language === 'en') ||
-                       captions[0];
-
-    if (!captionTrack) {
-      throw new Error('No suitable captions found');
+    // If no manual captions, try auto-generated
+    if (!transcriptText) {
+      try {
+        console.log('Attempting to fetch auto-generated captions');
+        const response = await fetch(
+          `https://www.youtube.com/api/timedtext?v=${videoId}&asr=1&lang=en`
+        );
+        
+        if (response.ok) {
+          const text = await response.text();
+          if (text && text.includes('<text')) {
+            transcriptText = text;
+            captionType = 'auto';
+          }
+        }
+      } catch (error) {
+        console.log('Failed to fetch auto-generated captions:', error.message);
+      }
     }
 
-    // Get the actual caption content
-    const captionContent = await youtube.captions.download({
-      key: API_KEY,
-      id: captionTrack.id,
-      tfmt: 'srt'
-    });
+    if (!transcriptText) {
+      throw new Error('No captions found for this video');
+    }
 
-    // Parse the SRT format into our transcript format
-    const transcript = parseSRT(captionContent.data);
+    // Parse the XML caption format
+    const transcript = parseYouTubeCaption(transcriptText);
     
     return {
       transcript,
-      language: captionTrack.snippet.language,
-      captionType: captionTrack.snippet.trackKind.includes('ASR') ? 'auto' : 'manual'
+      language,
+      captionType
     };
   } catch (error) {
     console.error('Final transcript fetch error:', error);
@@ -465,33 +487,33 @@ async function fetchVideoTranscript(videoId) {
   }
 }
 
-function parseSRT(srtContent) {
-  const segments = srtContent.split('\n\n');
-  return segments
-    .map(segment => {
-      const lines = segment.split('\n');
-      if (lines.length < 3) return null;
+function parseYouTubeCaption(xmlString) {
+  try {
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+    const textNodes = xmlDoc.getElementsByTagName('text');
+    
+    return Array.from(textNodes).map(node => {
+      const start = parseFloat(node.getAttribute('start') || '0') * 1000;
+      const duration = (parseFloat(node.getAttribute('dur') || '0')) * 1000;
+      const text = node.textContent || '';
       
-      const timeMatch = lines[1].match(/(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})/);
-      if (!timeMatch) return null;
-
-      const startTime = timeToMilliseconds(timeMatch[1]);
-      const endTime = timeToMilliseconds(timeMatch[2]);
-      const text = lines.slice(2).join(' ').trim();
-
       return {
-        text,
-        offset: startTime,
-        duration: endTime - startTime
+        text: text
+          .replace(/&#39;/g, "'")
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .trim(),
+        offset: start,
+        duration: duration || 2000 // Default duration if not provided
       };
-    })
-    .filter(Boolean);
-}
-
-function timeToMilliseconds(timeStr) {
-  const [time, ms] = timeStr.split(',');
-  const [hours, minutes, seconds] = time.split(':').map(Number);
-  return (hours * 3600 + minutes * 60 + seconds) * 1000 + Number(ms);
+    }).filter(item => item.text.length > 0);
+  } catch (error) {
+    console.error('Error parsing XML:', error);
+    throw new Error('Failed to parse captions');
+  }
 }
 
 app.post('/api/transcript', async (req, res) => {
