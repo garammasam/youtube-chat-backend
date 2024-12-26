@@ -8,9 +8,24 @@ import { DOMParser } from 'xmldom';
 
 dotenv.config();
 
-// Initialize YouTube API
+// Initialize YouTube API with service account
 const youtube = google.youtube('v3');
-const API_KEY = process.env.YOUTUBE_API_KEY;
+let auth;
+
+if (process.env.NODE_ENV === 'production') {
+  // In production, use the JSON credentials from environment variable
+  const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/youtube.force-ssl']
+  });
+} else {
+  // In development, use the key file
+  auth = new google.auth.GoogleAuth({
+    keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    scopes: ['https://www.googleapis.com/auth/youtube.force-ssl']
+  });
+}
 
 // Log environment information
 console.log('Server starting with:', {
@@ -404,7 +419,7 @@ async function fetchVideoTranscript(videoId) {
 
     // First, get video details
     const videoResponse = await youtube.videos.list({
-      key: API_KEY,
+      auth: await auth.getClient(),
       part: ['contentDetails', 'snippet'],
       id: [videoId]
     });
