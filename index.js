@@ -11,14 +11,14 @@ const app = express();
 
 app.use(cors({
   origin: [
-    'http://localhost:5173',
+    'http://localhost:5173', 
     'http://127.0.0.1:5173', 
-    'http://localhost:5174',
-    'http://127.0.0.1:5174',
-    'http://192.168.1.100:5173',
+    'http://localhost:5174', 
+    'http://127.0.0.1:5174', 
+    'http://192.168.1.100:5173', 
     'http://192.168.1.100:5174',
-    process.env.FRONTEND_URL, // Add your frontend production URL
-  ].filter(Boolean), // Remove any undefined values
+    process.env.FRONTEND_URL || 'https://youtube-chat-beryl.vercel.app'
+  ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
 }));
