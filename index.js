@@ -437,29 +437,60 @@ async function fetchVideoTranscript(videoId) {
         for (const caption of captionData.items) {
           try {
             console.log('Trying caption track:', caption.snippet);
-            const captionId = caption.id;
             
-            // Try different formats for each caption ID
-            const formats = [
-              `https://www.youtube.com/api/timedtext?type=track&v=${videoId}&lang=${caption.snippet.language}&name=${encodeURIComponent(caption.snippet.name || '')}&fmt=srv3`,
-              `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&name=${encodeURIComponent(caption.snippet.name || '')}`,
-              `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&tlang=en`
-            ];
+            // Try direct ASR caption URL first
+            if (caption.snippet.trackKind === 'asr') {
+              const asrUrls = [
+                `https://www.youtube.com/api/timedtext?v=${videoId}&asr=1&lang=${caption.snippet.language}`,
+                `https://www.youtube.com/api/timedtext?v=${videoId}&kind=asr&lang=${caption.snippet.language}`,
+                `https://www.youtube.com/api/timedtext?v=${videoId}&kind=asr&lang=${caption.snippet.language}&fmt=srv3`
+              ];
 
-            for (const url of formats) {
-              try {
-                const response = await fetch(url);
-                if (response.ok) {
-                  const text = await response.text();
-                  if (text && text.includes('<text')) {
-                    transcriptText = text;
-                    language = caption.snippet.language;
-                    captionType = caption.snippet.trackKind === 'ASR' ? 'auto' : 'manual';
-                    break;
+              for (const url of asrUrls) {
+                try {
+                  console.log('Trying ASR URL:', url);
+                  const response = await fetch(url);
+                  if (response.ok) {
+                    const text = await response.text();
+                    console.log('ASR response:', text.substring(0, 100) + '...');
+                    if (text && text.includes('<text')) {
+                      transcriptText = text;
+                      language = caption.snippet.language;
+                      captionType = 'auto';
+                      break;
+                    }
                   }
+                } catch (error) {
+                  console.log(`Failed to fetch ASR format:`, error.message);
                 }
-              } catch (error) {
-                console.log(`Failed to fetch caption format:`, error.message);
+              }
+            }
+
+            if (!transcriptText) {
+              // Try regular caption formats
+              const formats = [
+                `https://www.youtube.com/api/timedtext?type=track&v=${videoId}&lang=${caption.snippet.language}&name=${encodeURIComponent(caption.snippet.name || '')}&fmt=srv3`,
+                `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&name=${encodeURIComponent(caption.snippet.name || '')}`,
+                `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&tlang=en`
+              ];
+
+              for (const url of formats) {
+                try {
+                  console.log('Trying regular URL:', url);
+                  const response = await fetch(url);
+                  if (response.ok) {
+                    const text = await response.text();
+                    console.log('Regular response:', text.substring(0, 100) + '...');
+                    if (text && text.includes('<text')) {
+                      transcriptText = text;
+                      language = caption.snippet.language;
+                      captionType = caption.snippet.trackKind === 'ASR' ? 'auto' : 'manual';
+                      break;
+                    }
+                  }
+                } catch (error) {
+                  console.log(`Failed to fetch regular format:`, error.message);
+                }
               }
             }
 
@@ -471,38 +502,7 @@ async function fetchVideoTranscript(videoId) {
       }
     }
 
-    // If still no transcript, try auto-generated captions
-    if (!transcriptText) {
-      try {
-        console.log('Attempting to fetch auto-generated captions');
-        const autoFormats = [
-          `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr`,
-          `https://www.youtube.com/api/timedtext?v=${videoId}&asr=1&lang=en`,
-          `https://www.youtube.com/api/timedtext?v=${videoId}&kind=asr&lang=en&fmt=srv3`
-        ];
-
-        for (const url of autoFormats) {
-          try {
-            const response = await fetch(url);
-            if (response.ok) {
-              const text = await response.text();
-              if (text && text.includes('<text')) {
-                transcriptText = text;
-                language = 'en';
-                captionType = 'auto';
-                break;
-              }
-            }
-          } catch (error) {
-            console.log(`Failed to fetch auto caption format:`, error.message);
-          }
-        }
-      } catch (error) {
-        console.log('Failed to fetch auto-generated captions:', error.message);
-      }
-    }
-
-    // Last resort: try to get captions from page source
+    // If still no transcript, try page scraping as last resort
     if (!transcriptText) {
       try {
         console.log('Attempting to fetch captions through page scraping');
@@ -520,17 +520,26 @@ async function fetchVideoTranscript(videoId) {
           const match = html.match(pattern);
           if (match) {
             console.log('Found caption data in page source');
-            const captionData = JSON.parse(`{${match[1]}}`);
-            console.log('Caption data:', captionData);
+            try {
+              const captionData = JSON.parse(`{${match[1]}}`);
+              console.log('Caption data:', captionData);
 
-            // Try to extract direct caption URL if available
-            if (captionData.baseUrl || captionData.url) {
-              const captionUrl = captionData.baseUrl || captionData.url;
-              const response = await fetch(captionUrl);
-              if (response.ok) {
-                transcriptText = await response.text();
-                break;
+              // Try to extract direct caption URL if available
+              if (captionData.baseUrl || captionData.url) {
+                const captionUrl = captionData.baseUrl || captionData.url;
+                console.log('Trying scraped URL:', captionUrl);
+                const response = await fetch(captionUrl);
+                if (response.ok) {
+                  const text = await response.text();
+                  console.log('Scraped response:', text.substring(0, 100) + '...');
+                  if (text && text.includes('<text')) {
+                    transcriptText = text;
+                    break;
+                  }
+                }
               }
+            } catch (parseError) {
+              console.log('Failed to parse scraped data:', parseError.message);
             }
           }
         }
