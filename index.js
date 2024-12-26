@@ -17,13 +17,19 @@ if (process.env.NODE_ENV === 'production') {
   const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
   auth = new google.auth.GoogleAuth({
     credentials,
-    scopes: ['https://www.googleapis.com/auth/youtube.force-ssl']
+    scopes: [
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+      'https://www.googleapis.com/auth/youtubepartner'
+    ]
   });
 } else {
   // In development, use the key file
   auth = new google.auth.GoogleAuth({
     keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-    scopes: ['https://www.googleapis.com/auth/youtube.force-ssl']
+    scopes: [
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+      'https://www.googleapis.com/auth/youtubepartner'
+    ]
   });
 }
 
@@ -438,7 +444,7 @@ async function fetchVideoTranscript(videoId) {
     // Get caption tracks using authenticated request
     const captionResponse = await youtube.captions.list({
       auth: authClient,
-      part: ['snippet'],
+      part: ['snippet', 'id'],
       videoId: videoId
     });
     
@@ -460,49 +466,45 @@ async function fetchVideoTranscript(videoId) {
             const downloadResponse = await youtube.captions.download({
               auth: authClient,
               id: caption.id,
-              tfmt: 'srt'
+              tfmt: 'srt',
+              prettyPrint: true
             });
             
-            console.log('Download response:', downloadResponse.data ? 'Success' : 'Empty');
-            
-            if (downloadResponse.data) {
+            if (downloadResponse && downloadResponse.data) {
+              console.log('Download successful, data length:', downloadResponse.data.length);
               transcriptText = downloadResponse.data;
               language = caption.snippet.language;
               captionType = caption.snippet.trackKind === 'ASR' ? 'auto' : 'manual';
               break;
+            } else {
+              console.log('Download response empty');
             }
           } catch (downloadError) {
             console.log('Failed to download caption:', downloadError.message);
+            console.log('Download error details:', downloadError.response?.data || downloadError);
             
-            // If download fails, try public endpoints
+            // If OAuth download fails, try public endpoints as fallback
             const formats = [
               `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}`,
               `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&fmt=srv3`,
-              `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&tlang=en`
+              `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${caption.snippet.language}&kind=asr`
             ];
 
             for (const url of formats) {
               try {
-                console.log('Trying URL:', url);
-                const response = await fetch(url, {
-                  headers: {
-                    'Authorization': `Bearer ${(await authClient.getAccessToken()).token}`
-                  }
-                });
+                console.log('Trying public URL:', url);
+                const response = await fetch(url);
                 const text = await response.text();
-                console.log('Response text length:', text.length);
-                console.log('Response preview:', text.substring(0, 200));
                 
-                if (response.ok && text && text.length > 0) {
-                  if (text.includes('<transcript>') || text.includes('<text')) {
-                    transcriptText = text;
-                    language = caption.snippet.language;
-                    captionType = caption.snippet.trackKind === 'ASR' ? 'auto' : 'manual';
-                    break;
-                  }
+                if (response.ok && text && text.length > 0 && (text.includes('<transcript>') || text.includes('<text'))) {
+                  console.log('Found captions via public endpoint');
+                  transcriptText = text;
+                  language = caption.snippet.language;
+                  captionType = caption.snippet.trackKind === 'ASR' ? 'auto' : 'manual';
+                  break;
                 }
               } catch (error) {
-                console.log(`Failed to fetch format:`, error.message);
+                console.log(`Failed to fetch from public endpoint:`, error.message);
               }
             }
           }
@@ -516,52 +518,36 @@ async function fetchVideoTranscript(videoId) {
 
     // If still no transcript, try page scraping as last resort
     if (!transcriptText) {
-      try {
-        console.log('Attempting to fetch captions through page scraping');
-        const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-        const html = await response.text();
-        
-        // Look for caption data in different formats
-        const patterns = [
-          /"captionTracks":\[(.*?)\]/,
-          /"playerCaptionsTracklistRenderer":\{(.*?)\}/,
-          /{"captionTracks":(.*?)}/
-        ];
-
-        for (const pattern of patterns) {
-          const match = html.match(pattern);
-          if (match) {
-            console.log('Found caption data in page source');
-            try {
-              const captionData = JSON.parse(`{${match[1]}}`);
-              console.log('Caption data:', captionData);
-
-              if (captionData.baseUrl || captionData.url) {
-                const captionUrl = captionData.baseUrl || captionData.url;
-                console.log('Trying scraped URL:', captionUrl);
-                const response = await fetch(captionUrl, {
-                  headers: {
-                    'Authorization': `Bearer ${(await authClient.getAccessToken()).token}`
-                  }
-                });
+      console.log('Attempting to fetch captions through page scraping');
+      const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+      const html = await response.text();
+      
+      const captionDataMatch = html.match(/"captions":\s*({[^}]+})/);
+      if (captionDataMatch) {
+        try {
+          const captionData = JSON.parse(captionDataMatch[1]);
+          console.log('Found caption data in page source:', captionData);
+          
+          if (captionData.playerCaptionsTracklistRenderer?.captionTracks) {
+            const tracks = captionData.playerCaptionsTracklistRenderer.captionTracks;
+            for (const track of tracks) {
+              try {
+                const response = await fetch(track.baseUrl);
                 const text = await response.text();
-                console.log('Response text length:', text.length);
-                console.log('Response preview:', text.substring(0, 200));
-                
-                if (response.ok && text && text.length > 0) {
-                  if (text.includes('<transcript>') || text.includes('<text')) {
-                    transcriptText = text;
-                    break;
-                  }
+                if (response.ok && text && text.length > 0 && (text.includes('<transcript>') || text.includes('<text'))) {
+                  transcriptText = text;
+                  language = track.languageCode;
+                  captionType = track.kind === 'asr' ? 'auto' : 'manual';
+                  break;
                 }
+              } catch (error) {
+                console.log('Failed to fetch caption track:', error.message);
               }
-            } catch (parseError) {
-              console.log('Failed to parse scraped data:', parseError.message);
             }
           }
+        } catch (error) {
+          console.log('Failed to parse caption data:', error.message);
         }
-      } catch (error) {
-        console.log('Failed to scrape captions:', error.message);
       }
     }
 
