@@ -419,18 +419,46 @@ async function fetchVideoTranscript(videoId) {
       hasCaptions: video.contentDetails.caption === 'true'
     });
 
-    // Try to fetch captions using a direct approach
+    // Try to fetch captions using the v3 API
     const languages = ['en', 'en-US', 'en-GB', 'ms', 'id'];
     let transcriptText = null;
     let language = 'en';
     let captionType = 'auto';
 
+    // Try to get caption tracks
+    const captionResponse = await fetch(
+      `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${API_KEY}`
+    );
+    
+    if (!captionResponse.ok) {
+      console.log('Failed to get caption tracks, trying direct method');
+    } else {
+      const captionData = await captionResponse.json();
+      console.log('Caption tracks:', captionData);
+    }
+
+    // Try direct caption fetching with different formats
     for (const lang of languages) {
       try {
         console.log(`Attempting to fetch captions for language: ${lang}`);
-        const response = await fetch(
+        // Try format 1
+        let response = await fetch(
           `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}`
         );
+        
+        if (!response.ok) {
+          // Try format 2
+          response = await fetch(
+            `https://www.youtube.com/api/timedtext?type=track&v=${videoId}&lang=${lang}`
+          );
+        }
+        
+        if (!response.ok) {
+          // Try format 3 with track kind
+          response = await fetch(
+            `https://www.youtube.com/api/timedtext?type=list&v=${videoId}&tlangs=1`
+          );
+        }
         
         if (response.ok) {
           const text = await response.text();
@@ -446,13 +474,28 @@ async function fetchVideoTranscript(videoId) {
       }
     }
 
-    // If no manual captions, try auto-generated
+    // If no manual captions, try auto-generated with different formats
     if (!transcriptText) {
       try {
         console.log('Attempting to fetch auto-generated captions');
-        const response = await fetch(
+        // Try format 1
+        let response = await fetch(
           `https://www.youtube.com/api/timedtext?v=${videoId}&asr=1&lang=en`
         );
+        
+        if (!response.ok) {
+          // Try format 2
+          response = await fetch(
+            `https://www.youtube.com/api/timedtext?v=${videoId}&kind=asr&lang=en`
+          );
+        }
+        
+        if (!response.ok) {
+          // Try format 3
+          response = await fetch(
+            `https://www.youtube.com/api/timedtext?v=${videoId}&tlang=en&kind=asr`
+          );
+        }
         
         if (response.ok) {
           const text = await response.text();
@@ -463,6 +506,25 @@ async function fetchVideoTranscript(videoId) {
         }
       } catch (error) {
         console.log('Failed to fetch auto-generated captions:', error.message);
+      }
+    }
+
+    // Try one last time with raw page scraping
+    if (!transcriptText) {
+      try {
+        console.log('Attempting to fetch captions through page scraping');
+        const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+        const html = await response.text();
+        
+        // Extract caption data from page source
+        const captionMatch = html.match(/"captions":\s*({[^}]+})/);
+        if (captionMatch) {
+          console.log('Found caption data in page source');
+          const captionData = JSON.parse(captionMatch[1]);
+          console.log('Caption data:', captionData);
+        }
+      } catch (error) {
+        console.log('Failed to scrape captions:', error.message);
       }
     }
 
